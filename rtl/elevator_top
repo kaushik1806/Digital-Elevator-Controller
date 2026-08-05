@@ -1,0 +1,140 @@
+module elevator_top (
+    input  wire clk,
+    input  wire reset,
+    input  wire [3:0] car_req,     // car buttons (floors 0-3)
+    input  wire [2:0] hall_up,     // hall up buttons (floors 0-2)
+    input  wire [2:0] hall_down,   // hall down buttons (floors 1-3)
+    
+    output wire door_open,
+    output wire motor_up,
+    output wire motor_down,
+    output wire [6:0] seg,
+   output wire [3:0] an       // 7-segment output
+);
+wire [1:0] current_floor;
+     // Elevator FSM core
+    elevator_fsm u_fsm (
+        .clk(clk),
+        .reset(reset),
+        .car_req(car_req),
+        .hall_up(hall_up),
+        .hall_down(hall_down),
+        .current_floor(current_floor),
+        .door_open(door_open),
+        .motor_up(motor_up),
+        .motor_down(motor_down)
+    );
+
+    // Intermediate wires for BCD conversion
+    wire [3:0] floor_thousands, floor_hundreds, floor_tens, floor_ones;
+
+    // Convert binary current_floor to BCD (pad with zeros to widen into 16 bits for conversion)
+    binary_to_bcd floor_bcd (
+        .binary_in({14'b0, current_floor}), // 16-bit, current_floor in LSB
+        .thousands(floor_thousands),
+        .hundreds(floor_hundreds),
+        .tens(floor_tens),
+        .ones(floor_ones)
+    );
+
+    // Drive the 7-segment display
+    seven_seg_display disp_inst (
+        .clk(clk),
+        .rst(reset),
+        .digit3(4'd0),         // If unused, show 0
+        .digit2(4'd0),         // If unused, show 0
+        .digit1(4'd0),         // If unused, show 0
+        .digit0(floor_ones),   // Show current floor's BCD ones digit
+        .seg(seg),
+        .an(an)
+    );
+     
+
+endmodule
+    module binary_to_bcd(
+    input [15:0] binary_in,
+    output reg [3:0] thousands,
+    output reg [3:0] hundreds,
+    output reg [3:0] tens,
+    output reg [3:0] ones
+);
+    integer i;
+    reg [31:0] shift_reg; // [31:16] BCD part, [15:0] binary part
+
+    always @(*) begin
+        shift_reg = 0;
+        shift_reg[15:0] = binary_in;
+
+        for (i = 0; i < 16; i = i + 1) begin
+            // Add 3 if any BCD nibble >= 5
+            if (shift_reg[19:16] >= 5) shift_reg[19:16] = shift_reg[19:16] + 3;
+            if (shift_reg[23:20] >= 5) shift_reg[23:20] = shift_reg[23:20] + 3;
+            if (shift_reg[27:24] >= 5) shift_reg[27:24] = shift_reg[27:24] + 3;
+            if (shift_reg[31:28] >= 5) shift_reg[31:28] = shift_reg[31:28] + 3;
+            
+            // Shift left
+            shift_reg = shift_reg << 1;
+        end
+
+        // Extract BCD digits
+        thousands = shift_reg[31:28];
+        hundreds  = shift_reg[27:24];
+        tens      = shift_reg[23:20];
+        ones      = shift_reg[19:16];
+    end
+endmodule
+ module seven_seg_display(
+    input clk,
+    input rst,
+    input [3:0] digit3, digit2, digit1, digit0,
+    output reg [6:0] seg,
+    output reg [3:0] an
+);
+    reg [15:0] refresh_counter;  // clock divider
+    reg [1:0] sel;
+    reg [3:0] digit;
+
+    // Divide clock for ~1kHz refresh
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            refresh_counter <= 0;
+        else
+            refresh_counter <= refresh_counter + 1;
+    end
+
+    // Change digit every few thousand cycles
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            sel <= 0;
+        else if (refresh_counter == 0)
+            sel <= sel + 1;
+    end
+
+    // Select which digit to display
+    always @(*) begin
+        an = 4'b1111; // all off
+        case(sel)
+            2'b00: begin an = 4'b1110; digit = digit0; end
+            2'b01: begin an = 4'b1101; digit = digit1; end
+            2'b10: begin an = 4'b1011; digit = digit2; end
+            2'b11: begin an = 4'b0111; digit = digit3; end
+        endcase
+    end
+
+    // Segment decoder (active low)
+    always @(*) begin
+        case(digit)
+            4'd0: seg = 7'b1000000;
+            4'd1: seg = 7'b1111001;
+            4'd2: seg = 7'b0100100;
+            4'd3: seg = 7'b0110000;
+            4'd4: seg = 7'b0011001;
+            4'd5: seg = 7'b0010010;
+            4'd6: seg = 7'b0000010;
+            4'd7: seg = 7'b1111000;
+            4'd8: seg = 7'b0000000;
+            4'd9: seg = 7'b0010000;
+            default: seg = 7'b1111111; // blank
+        endcase
+    end
+endmodule
