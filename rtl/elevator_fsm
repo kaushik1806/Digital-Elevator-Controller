@@ -1,0 +1,139 @@
+module elevator_fsm (
+    input  wire        clk,
+    input  wire        reset,
+    input  wire [3:0]  car_req,
+    input  wire [2:0]  hall_up,
+    input  wire [2:0]  hall_down,
+    output reg  [1:0]  current_floor,
+    output reg         door_open,
+    output reg         motor_up,
+    output reg         motor_down
+);
+    // Internal signals
+    wire [3:0] new_reqs;
+    reg  [3:0] pending_reqs;
+    reg  [1:0] target_reg;
+    reg        have_target;
+    reg        dir_up;
+
+    wire [1:0] next_target;
+    wire       next_valid;
+
+    wire at_target;
+    wire want_up, want_down;
+
+    assign new_reqs = car_req | {hall_down,1'b0} | {1'b0,hall_up};
+
+    target_selector sel (
+        .reqs(pending_reqs),
+        .current_floor(current_floor),
+        .dir_up(dir_up),
+        .target(next_target),
+        .valid(next_valid)
+    );
+
+    assign at_target = (current_floor == target_reg) && have_target;
+    assign want_up   = (current_floor < target_reg);
+    assign want_down = (current_floor > target_reg);
+
+    // ------------------------
+    // Faster Step pulse generator
+    // ------------------------
+    reg [3:0] step_cnt;  // smaller counter
+    wire step_pulse;
+    parameter STEP_LIMIT = 4'd5; // reduced from 20 → 5
+    assign step_pulse = (step_cnt == 0);
+
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            step_cnt <= 0;
+        else if (motor_up | motor_down) begin
+            if (step_cnt == 0) step_cnt <= STEP_LIMIT - 1;
+            else step_cnt <= step_cnt - 1;
+        end else
+            step_cnt <= 0;
+    end
+
+    // Request latch
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            pending_reqs <= 4'b0000;
+        else begin
+            pending_reqs <= pending_reqs | new_reqs;
+            if (at_target && have_target)
+                pending_reqs[target_reg] <= 1'b0;
+        end
+    end
+
+    // Floor counter
+    always @(posedge clk or posedge reset) begin
+        if (reset)
+            current_floor <= 2'd0;
+        else if (step_pulse && motor_up && current_floor < 3)
+            current_floor <= current_floor + 1;
+        else if (step_pulse && motor_down && current_floor > 0)
+            current_floor <= current_floor - 1;
+    end
+
+    // FSM States
+    localparam IDLE        = 3'd0,
+               PICK_TARGET = 3'd1,
+               MOVING      = 3'd2,
+               DOOR_OPEN   = 3'd3,
+               DOOR_CLOSE  = 3'd4;
+
+    reg [2:0] state, next_state;
+
+    always @(posedge clk or posedge reset)
+        if (reset) state <= IDLE;
+        else state <= next_state;
+
+    always @(*) begin
+        next_state = state;
+        door_open  = 0;
+        motor_up   = 0;
+        motor_down = 0;
+
+        case (state)
+            IDLE:
+                if (next_valid) next_state = PICK_TARGET;
+
+            PICK_TARGET:
+                if (next_valid)
+                    if (next_target == current_floor) next_state = DOOR_OPEN;
+                    else next_state = MOVING;
+                else next_state = IDLE;
+
+            MOVING: begin
+                if (want_up) motor_up = 1;
+                else if (want_down) motor_down = 1;
+                if (at_target) next_state = DOOR_OPEN;
+            end
+
+            DOOR_OPEN: begin
+                door_open = 1;
+                next_state = DOOR_CLOSE;
+            end
+
+            DOOR_CLOSE:
+                if (next_valid) next_state = PICK_TARGET;
+                else next_state = IDLE;
+        endcase
+    end
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            target_reg  <= 0;
+            have_target <= 0;
+            dir_up      <= 1;
+        end else begin
+            if (state == PICK_TARGET && next_valid) begin
+                target_reg  <= next_target;
+                have_target <= 1;
+                dir_up      <= (next_target > current_floor);
+            end
+            if (state == DOOR_CLOSE && !next_valid)
+                have_target <= 0;
+        end
+    end
+endmodule
